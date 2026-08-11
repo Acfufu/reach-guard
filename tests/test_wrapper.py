@@ -284,3 +284,64 @@ def test_scrub_403_value_after_key(fake_bin, capsys):
     wrapper.run(cfg, "gh", ["api", "--token", "403"], quiet=False)
     err = capsys.readouterr().err
     assert "403" not in err  # redacted because it followed a sensitive key
+
+
+# ---------------------------------------------------------------------------
+# Recursion guard: a wrapped real binary that re-execs its own name via PATH
+# (opencli spawns helper children; gh self-executes) must not re-enter the
+# shim/guard forever. Same-bin re-entry executes the real binary directly;
+# different-bin nesting (agent-reach -> bili) stays fully guarded.
+# ---------------------------------------------------------------------------
+
+def _make_popen_capture(monkeypatch, calls):
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            calls.append((argv, kwargs.get("env")))
+            self.returncode = 0
+
+        def communicate(self):
+            return b"", b""
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(wrapper.subprocess, "Popen", FakePopen)
+
+
+def test_self_recursion_same_bin_bypasses_guard(fake_bin, monkeypatch, capsys):
+    fake_bin("gh", exit_code=0, stdout="gh version 1.0")
+    calls = []
+    _make_popen_capture(monkeypatch, calls)
+    monkeypatch.setenv("REACH_GUARD_DISPATCH_BIN", "gh")
+    cfg = load_config()
+    res = wrapper.run(cfg, "gh", ["--version"])
+    assert res.exit_code == EXIT_OK
+    assert "self-recursion bypass" in capsys.readouterr().err
+    # exactly one hop, straight to the real binary — no guard re-entry
+    assert len(calls) == 1
+    argv = calls[0][0]
+    assert argv[0].endswith("gh.real") and argv[1:] == ["--version"]
+    # the bypass hop writes no ledger records
+    recs = state.read_records()
+    assert not any(r.get("bin") == "gh" for r in recs)
+
+
+def test_self_recursion_different_bin_still_guarded(fake_bin, monkeypatch,
+                                                    capsys):
+    fake_bin("gh", exit_code=0, stdout="gh version 1.0")
+    calls = []
+    _make_popen_capture(monkeypatch, calls)
+    monkeypatch.setenv("REACH_GUARD_DISPATCH_BIN", "agent-reach")
+    cfg = load_config()
+    res = wrapper.run(cfg, "gh", ["--version"])
+    assert res.exit_code == EXIT_OK
+    assert "self-recursion bypass" not in capsys.readouterr().err
+    assert len(calls) == 1
+
+
+def test_self_recursion_missing_real_exit8(monkeypatch, capsys):
+    monkeypatch.setenv("REACH_GUARD_DISPATCH_BIN", "gh")
+    monkeypatch.setattr(wrapper, "find_real_binary", lambda bin_name: None)
+    cfg = load_config()
+    res = wrapper.run(cfg, "gh", ["--version"])
+    assert res.exit_code == EXIT_UPSTREAM

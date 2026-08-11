@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reach-guard"
-version = "0.1.0"
+version = "0.1.1"
 description = "Strict-mode enforcement wrapper for agent-reach and upstream binaries (serial lock, pacing, quota, proxy binding, circuit breaker)"
 readme = "README.md"
 requires-python = ">=3.11"

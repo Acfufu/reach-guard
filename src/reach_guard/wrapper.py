@@ -105,6 +105,16 @@ def run(cfg: Config, bin_name: str, args: list, *,
         print(f"[reach-guard] guarded dispatch bin={bin_name} "
               f"args={_scrub_command(args)}", file=sys.stderr)
 
+    # ---- self-recursion bypass -------------------------------------------
+    # Wrapped real binaries sometimes re-exec their own name via PATH (opencli
+    # spawns helper children; gh self-executes). Without this, the shim would
+    # redirect that self-exec back into guard forever — an infinite fork bomb.
+    # Same-bin re-entry execs the real binary directly (the outer dispatch
+    # already ran every gate); different-bin nesting (agent-reach -> bili)
+    # still goes through the full guarded path below.
+    if os.environ.get("REACH_GUARD_DISPATCH_BIN") == bin_name:
+        return _run_self_recursion(bin_name, args, dry_run, quiet)
+
     # ---- resolve platform (fail-closed on unknown) -----------------------
     try:
         platform, exempt, meta, _reason = resolve_platform(bin_name, args, cfg)
@@ -135,6 +145,35 @@ def run(cfg: Config, bin_name: str, args: list, *,
         lock.release()
 
 
+def _run_self_recursion(bin_name: str, args: list, dry_run: bool,
+                        quiet: bool) -> RunResult:
+    """Same-bin re-entry: exec the real binary directly, no guard logic.
+
+    The outer dispatch already ran every gate; re-running them here would
+    loop forever when the real binary re-execs itself through the shim.
+    """
+    real = find_real_binary(bin_name)
+    if not real:
+        print(f"[reach-guard] {_install_hint(bin_name)}", file=sys.stderr)
+        return RunResult(EXIT_UPSTREAM)
+    if dry_run:
+        print(f"[reach-guard dry-run] self-recursion bypass: {real} "
+              f"{_scrub_command(args)}")
+        return RunResult(EXIT_OK)
+    if not quiet:
+        print(f"[reach-guard] self-recursion bypass: exec {real} directly",
+              file=sys.stderr)
+    env = dict(os.environ)
+    env["REACH_GUARD_DISPATCH_BIN"] = bin_name
+    try:
+        proc = subprocess.Popen([real] + list(args), env=env, stdin=None)
+        rc = proc.wait()
+    except OSError as e:
+        print(f"[reach-guard] failed to execute {real}: {e}", file=sys.stderr)
+        return RunResult(EXIT_UPSTREAM)
+    return RunResult(EXIT_OK if rc == 0 else EXIT_UPSTREAM, upstream_exit=rc)
+
+
 def _run_exempt(cfg: Config, bin_name: str, args: list, run_id: str,
                 dry_run: bool) -> RunResult:
     print("[reach-guard] github EXEMPT route: passthrough with logging only "
@@ -150,7 +189,7 @@ def _run_exempt(cfg: Config, bin_name: str, args: list, run_id: str,
     if dry_run:
         print("[reach-guard dry-run] would run:", real, _scrub_command(args))
         return RunResult(EXIT_OK)
-    rc = _exec_passthrough(real, args, run_id, meta, cfg)
+    rc = _exec_passthrough(real, args, run_id, meta, cfg, bin_name)
     return RunResult(EXIT_OK if rc == 0 else EXIT_UPSTREAM, upstream_exit=rc)
 
 
@@ -169,7 +208,7 @@ def _run_meta(cfg: Config, bin_name: str, args: list, run_id: str,
     if dry_run:
         print("[reach-guard dry-run] would run:", real, _scrub_command(args))
         return RunResult(EXIT_OK)
-    rc = _exec_passthrough(real, args, run_id, meta, cfg)
+    rc = _exec_passthrough(real, args, run_id, meta, cfg, bin_name)
     return RunResult(EXIT_OK if rc == 0 else EXIT_UPSTREAM, upstream_exit=rc)
 
 
@@ -257,7 +296,7 @@ def _run_guarded(cfg, bin_name, platform, args, run_id, dry_run,
         return RunResult(EXIT_OK)
 
     # ---- execute + capture + replay --------------------------------------
-    rc, out, err, interrupted = _exec_capture(real, args, run_id, meta, env)
+    rc, out, err, interrupted = _exec_capture(real, args, run_id, meta, env, bin_name)
     if interrupted:
         state.append_record(dict(meta, ts=time.time(), interrupted=True, exit=rc))
         print("[reach-guard] interrupted by SIGINT (forwarded to upstream); "
@@ -284,10 +323,13 @@ def _run_guarded(cfg, bin_name, platform, args, run_id, dry_run,
 
 
 def _exec_capture(real: str, args: list, run_id: str, meta: dict,
-                  env: dict) -> tuple:
+                  env: dict, bin_name: str) -> tuple:
     """Run upstream in its own session, capture output, forward SIGINT to the
     whole child group (terminal Ctrl-C semantics). Returns (rc, out, err,
     interrupted)."""
+    # Marker lets a re-entered dispatch tell same-bin self-recursion (bypass)
+    # from legitimate different-bin nesting (guard normally).
+    env["REACH_GUARD_DISPATCH_BIN"] = bin_name
     interrupted = [False]
     try:
         proc = subprocess.Popen([real] + list(args), env=env,
@@ -320,10 +362,11 @@ def _exec_capture(real: str, args: list, run_id: str, meta: dict,
 
 
 def _exec_passthrough(real: str, args: list, run_id: str, meta: dict,
-                      cfg: Config) -> int:
+                      cfg: Config, bin_name: str) -> int:
     # exempt/meta paths carry no platform proxy semantics; pass env through as-is
     env = dict(os.environ)
-    rc, out, err, interrupted = _exec_capture(real, args, run_id, meta, env)
+    rc, out, err, interrupted = _exec_capture(real, args, run_id, meta, env,
+                                              bin_name)
     if interrupted:
         state.append_record(dict(meta, ts=time.time(), interrupted=True,
                                  exit=rc))
