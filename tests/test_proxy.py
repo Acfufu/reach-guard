@@ -110,6 +110,26 @@ def test_build_env_no_proxy_injected():
     assert env["NO_PROXY"] == "localhost"
 
 
+def test_docker_mode_requires_network_config(write_config):
+    write_config("platforms:\n  xiaohongshu:\n    proxy_mode: docker\n")
+    cfg = load_config()
+    cfg.proxies = [ProxyEntry(url="http://1.2.3.4:8080")]
+    cfg.xhs_mcp_docker_network = ""
+    with pytest.raises(IPError):
+        proxy_layer.verify_binding(cfg, "xiaohongshu", "h1",
+                                   cfg.proxies[0], live=False)
+
+
+def test_docker_mode_configured_passes_live_false(write_config):
+    write_config("platforms:\n  xiaohongshu:\n    proxy_mode: docker\n")
+    cfg = load_config()
+    cfg.proxies = [ProxyEntry(url="http://1.2.3.4:8080")]
+    cfg.xhs_mcp_docker_network = "xhs-net"
+    url = proxy_layer.verify_binding(cfg, "xiaohongshu", "h1",
+                                     cfg.proxies[0], live=False)
+    assert url == "http://1.2.3.4:8080"
+
+
 def test_generate_profile_0700(tmp_path):
     cfg = load_config()
     cfg.profile_dir = str(tmp_path)
