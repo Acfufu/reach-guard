@@ -78,26 +78,56 @@ def scan_history() -> List[str]:
     return findings
 
 
+def _token_matches_wrapped(part: str) -> Optional[str]:
+    base = os.path.basename(part)
+    if base.endswith(".real"):
+        base = base[:-5]
+    if base in EXEMPT_BINS:
+        return None
+    if base in WRAPPED_BINARIES:
+        return base
+    return None
+
+
 def scan_processes() -> List[str]:
     findings = []
     try:
-        ps = subprocess.run(["ps", "-axo", "command="], capture_output=True,
-                            text=True, timeout=10).stdout
+        ps = subprocess.run(["ps", "-axo", "pid=,ppid=,command="],
+                            capture_output=True, text=True, timeout=10).stdout
     except Exception:
         return findings
+    procs = {}
     for line in ps.splitlines():
-        line = line.strip()
-        if not line or GUARDED_RE.search(line):
+        parts = line.split(None, 2)
+        if len(parts) < 3:
             continue
-        parts = line.split()
-        if not parts:
+        pid, ppid, cmd = parts
+        procs[pid] = (ppid, cmd)
+
+    def is_guarded(pid: str) -> bool:
+        seen = set()
+        while pid and pid not in seen:
+            seen.add(pid)
+            if pid not in procs:
+                return False
+            _, cmd = procs[pid]
+            if GUARDED_RE.search(cmd):
+                return True
+            pid = procs[pid][0]
+        return False
+
+    for pid, (ppid, cmd) in procs.items():
+        if GUARDED_RE.search(cmd):
             continue
-        base = os.path.basename(parts[0])
-        if base in EXEMPT_BINS:
-            continue
-        if base in WRAPPED_BINARIES:
-            findings.append(f"running process uses wrapped binary {base!r}: "
-                            f"{line[:160]}")
+        found = None
+        for tok in cmd.split():
+            m = _token_matches_wrapped(tok)
+            if m:
+                found = m
+                break
+        if found and not is_guarded(pid):
+            findings.append(
+                f"running process uses wrapped binary {found!r}: {cmd[:160]}")
     return findings
 
 
