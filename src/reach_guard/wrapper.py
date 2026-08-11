@@ -171,6 +171,13 @@ def _run_self_recursion(bin_name: str, args: list, dry_run: bool,
     except OSError as e:
         print(f"[reach-guard] failed to execute {real}: {e}", file=sys.stderr)
         return RunResult(EXIT_UPSTREAM)
+    state.append_record({
+        "run_id": uuid.uuid4().hex[:12],
+        "platform": "bypass", "account_hash": "anonymous",
+        "bin": bin_name, "command": _scrub_command(args),
+        "self_recursion": True, "ts": time.time(),
+        "interrupted": False, "exit": rc,
+    })
     return RunResult(EXIT_OK if rc == 0 else EXIT_UPSTREAM, upstream_exit=rc)
 
 

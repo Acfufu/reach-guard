@@ -111,6 +111,20 @@ reach-guard detect              # 直连检测（历史+进程；gh 豁免）
 - 不绕过平台 ToS；不替代官方开放平台 L0 合规路径。
 - 无 `--relaxed`；表外平台 exit 6，未知二进制 exit 8，绝不放行。
 
+## 已知绕过面（高级用户须知，非缺陷）
+
+守卫约束的是 **agent 的默认调用路径**（防意外刷量/注入劫持），不是对本地恶意进程的
+安全边界。以下路径天然存在且与守卫等价：
+
+- 直接调用 `<bin>.real`（守卫安装时原二进制改名）或绝对路径调用（PATH shim 不拦截
+  绝对路径，如 `/usr/bin/curl`）；剥离 PATH 同理。
+- `REACH_GUARD_DISPATCH_BIN=<bin>` 环境变量（自递归绕过标记）：同二进制重入时守卫
+  直接 exec 真实二进制。这是 fork-bomb 防御的副产物，任何能写环境变量的调用者
+  （agent/用户）都可触发——与上述 `.real`/绝对路径绕过同等强度，无新增能力。
+
+按纪律约束 agent 即可（SKILL 常驻规则第 7 条：不要绕过 guard 直呼裸二进制）。
+
+
 ## 已知指纹面
 
 - **TLS 指纹**：bili-cli（aiohttp）使用 stock Python TLS，无 impersonation——

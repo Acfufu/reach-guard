@@ -321,9 +321,13 @@ def test_self_recursion_same_bin_bypasses_guard(fake_bin, monkeypatch, capsys):
     assert len(calls) == 1
     argv = calls[0][0]
     assert argv[0].endswith("gh.real") and argv[1:] == ["--version"]
-    # the bypass hop writes no ledger records
+    # the bypass hop records a self_recursion ledger entry (no gate fields)
     recs = state.read_records()
-    assert not any(r.get("bin") == "gh" for r in recs)
+    bypass = [r for r in recs if r.get("bin") == "gh"]
+    assert len(bypass) == 1
+    assert bypass[0].get("self_recursion") is True
+    assert bypass[0].get("exit") == 0
+    assert not any(r.get("platform") not in (None, "bypass") for r in bypass)
 
 
 def test_self_recursion_different_bin_still_guarded(fake_bin, monkeypatch,
