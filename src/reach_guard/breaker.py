@@ -61,13 +61,21 @@ def _whitelisted(cfg: Config, platform: str, args: list, signal_text: str,
 
 
 _METER_CHUNK = re.compile(r"^[\d\s%:.\-kK]+$")
+_METER_MARK = re.compile(r"--:--:--|\d+\.?\d*[kK]")
 
 
 def _strip_progress_noise(text: str) -> str:
-    """Drop curl progress-meter \r-chunks (numeric-columns-only) from the
-    scan input so transient byte/speed values never trip numeric signals."""
+    """Drop curl progress-meter \r-chunks (numeric-column blocks carrying
+    timing/speed markers) from the scan input so transient byte/speed values
+    never trip numeric signals. Bare numeric lines (e.g. a lone status code)
+    are preserved."""
     chunks = text.split("\r")
-    kept = [c for c in chunks if not _METER_CHUNK.match(c.strip())]
+    kept = []
+    for c in chunks:
+        s = c.strip()
+        if _METER_CHUNK.match(s) and _METER_MARK.search(s):
+            continue
+        kept.append(c)
     return "\n".join(kept)
 
 
