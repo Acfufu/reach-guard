@@ -14,7 +14,7 @@ def _main(*argv):
 
 def test_version():
     from reach_guard import __version__
-    assert __version__ == "0.1.0"
+    assert __version__ == "0.1.1"
     with pytest.raises(SystemExit) as ei:
         _main("--version")
     assert ei.value.code == 0

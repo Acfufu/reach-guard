@@ -51,7 +51,7 @@ def test_status_json_schema_pinned(capsys):
     data = _json_of(capsys)
     assert set(data) == TOP_KEYS
     assert data["schema_version"] == 1
-    assert data["guard_version"] == "0.1.0"
+    assert data["guard_version"] == "0.1.1"
     assert set(data["shims"]) == set(WRAPPED_BINARIES)
     assert set(data["shims"].values()) <= {"shim", "real", "absent"}
     assert set(data["platforms"]) == set(DEFAULT_PLATFORMS)
