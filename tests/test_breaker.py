@@ -91,3 +91,31 @@ def test_breaker_preflight_blocks():
         breaker.check_before_run(cfg, "bilibili", "someone-else")
     # other platform unaffected
     breaker.check_before_run(cfg, "v2ex", "h1")
+
+
+def test_numeric_signal_requires_digit_boundary():
+    """Bare numeric codes must not match inside unicode escapes or progress
+    meters: v2ex content '\u5403' (吃) contains '403' but must not trip; an
+    HTTP 'error: 403' status must trip."""
+    cfg = _cfg()
+    assert breaker.scan(cfg, "v2ex", ["curl"],
+                        '{"content": "\\u5403\\u5403 吃"}', "", 0,
+                        anonymous=True) is None
+    assert breaker.scan(cfg, "v2ex", ["curl"],
+                        "The requested URL returned error: 403", "", 0,
+                        anonymous=True) is not None
+    assert breaker.scan(cfg, "v2ex", ["curl"],
+                        '{"code": 403, "msg": "rate limited"}', "", 0,
+                        anonymous=True) is not None
+
+
+def test_progress_meter_noise_never_trips():
+    cfg = _cfg()
+    meter = ("  0   429    0   429     0     0  154k      0 --:--:-- "
+             "--:--:-- --:--:-- 154k")
+    assert breaker.scan(cfg, "v2ex", ["curl"], "", meter, 0,
+                        anonymous=True) is None
+    # a real error line is preserved and trips
+    assert breaker.scan(cfg, "v2ex", ["curl"], "",
+                        "curl: (22) The requested URL returned error: 429", 0,
+                        anonymous=True) is not None

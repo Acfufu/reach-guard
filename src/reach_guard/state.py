@@ -211,17 +211,14 @@ def unlock(platform: str, account_hash: str) -> bool:
 
 
 def list_breakers() -> list:
-    out = []
-    seen = set()
+    best = {}
     for r in read_records():
         if r.get("kind") != "breaker":
             continue
         key = (r.get("platform"), r.get("account_hash"), r.get("tier"))
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(r)
-    return out
+        if key not in best or (r.get("ts") or 0) > (best[key].get("ts") or 0):
+            best[key] = r
+    return list(best.values())
 
 
 # ---------------------------------------------------------------------------

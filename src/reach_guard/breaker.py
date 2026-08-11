@@ -30,8 +30,16 @@ def _compiled_signals(platform: str, cfg: Config) -> list:
     pats = list(pcfg.get("signals", []))
     for s in pcfg.get("permanent", []):
         pats.append(s)  # platform ban-class additions also matched here
-    return [re.compile(re.escape(p) if not _is_regex(p) else p, re.I)
-            for p in pats]
+    out = []
+    for p in pats:
+        pat = re.escape(p) if not _is_regex(p) else p
+        if re.fullmatch(r"-?\d+", p):
+            # bare numeric HTTP/risk codes must be digit-bounded, otherwise
+            # they false-positive inside unicode escapes (\u5403 -> 5403) and
+            # curl progress-meter byte counts
+            pat = rf"(?<!\d){pat}(?!\d)"
+        out.append(re.compile(pat, re.I))
+    return out
 
 
 def _is_regex(p: str) -> bool:
@@ -52,11 +60,22 @@ def _whitelisted(cfg: Config, platform: str, args: list, signal_text: str,
     return False
 
 
+_METER_CHUNK = re.compile(r"^[\d\s%:.\-kK]+$")
+
+
+def _strip_progress_noise(text: str) -> str:
+    """Drop curl progress-meter \r-chunks (numeric-columns-only) from the
+    scan input so transient byte/speed values never trip numeric signals."""
+    chunks = text.split("\r")
+    kept = [c for c in chunks if not _METER_CHUNK.match(c.strip())]
+    return "\n".join(kept)
+
+
 def scan(cfg: Config, platform: str, args: list, stdout: str, stderr: str,
          exit_code: int, anonymous: bool) -> Optional[str]:
     """Return matched signal string, or None. Checks whitelist -> permanent ->
     cooldown -> 200-empty heuristic."""
-    combined = f"{stdout}\n{stderr}"
+    combined = _strip_progress_noise(f"{stdout}\n{stderr}")
     if _whitelisted(cfg, platform, args, combined, anonymous):
         return None
 
