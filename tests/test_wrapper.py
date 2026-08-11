@@ -170,11 +170,13 @@ def test_opencli_meta_passthrough(fake_bin):
 
 
 def test_sigint_records_interrupted(fake_bin, write_config):
+    # curl allowlisted-host route (meta passthrough): no time window / quota
+    # gates, so this subprocess test is deterministic at any wall-clock time.
     write_config("bilibili:\n  anon: true\n")
     shim_dir = os.environ["REACH_GUARD_SHIM_DIR"]
-    with open(os.path.join(shim_dir, "bili.real"), "w") as f:
+    with open(os.path.join(shim_dir, "curl.real"), "w") as f:
         f.write("#!/bin/sh\nsleep 30\n")
-    os.chmod(os.path.join(shim_dir, "bili.real"), 0o755)
+    os.chmod(os.path.join(shim_dir, "curl.real"), 0o755)
     cfg = load_config()
     cfg.bili_anon = True
     # run via CLI subprocess so we can SIGINT it
@@ -184,7 +186,7 @@ def test_sigint_records_interrupted(fake_bin, write_config):
     env["REACH_GUARD_STATE_DIR"] = os.environ["REACH_GUARD_STATE_DIR"]
     env["REACH_GUARD_SHIM_DIR"] = shim_dir
     proc = subprocess.Popen(
-        [py, "-m", "reach_guard", "run", "bili", "search", "x"],
+        [py, "-m", "reach_guard", "run", "curl", "https://r.jina.ai/x"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         cwd=os.path.join(os.path.dirname(__file__), "..", "src"))
     time.sleep(1.5)
@@ -198,3 +200,87 @@ def test_find_real_binary_prefers_dot_real(fake_bin):
     fake_bin("curl", exit_code=0, stdout="")
     path = wrapper.find_real_binary("curl")
     assert path and path.endswith("curl.real")
+
+
+# ---------------------------------------------------------------------------
+# P0-4: credential argv scrubbing (stderr dispatch line + ledger command)
+# ---------------------------------------------------------------------------
+
+def test_scrub_positional_key_value():
+    out = wrapper._scrub_command(["--twitter-cookies", "SECRET1", "search", "x"])
+    assert "SECRET1" not in out
+    assert "--twitter-cookies ***" in out
+
+
+def test_scrub_equals_form():
+    assert wrapper._scrub_command(["--xhs-cookies=SECRET2"]) == "--xhs-cookies=***"
+    assert wrapper._scrub_command(["--token=a=b"]) == "--token=***"
+
+
+def test_scrub_case_insensitive_key():
+    assert wrapper._scrub_command(["--TOKEN=SECRET3"]) == "--TOKEN=***"
+    out = wrapper._scrub_command(["--Twitter-Cookies", "SECRET4"])
+    assert "SECRET4" not in out and "***" in out
+
+
+def test_scrub_all_sensitive_keys():
+    args = ["--twitter-cookies", "VAL1", "--xhs-cookies", "VAL2",
+            "--youtube-cookies", "VAL3", "--github-token", "VAL4",
+            "--groq-key", "VAL5", "--openai-key", "VAL6", "--proxy", "VAL7",
+            "--auth_token", "VAL8", "--ct0", "VAL9", "--password", "VAL10",
+            "--token", "VAL11", "--cookie", "VAL12", "--cookies", "VAL13"]
+    out = wrapper._scrub_command(args)
+    for v in ("VAL1", "VAL2", "VAL3", "VAL4", "VAL5", "VAL6", "VAL7",
+              "VAL8", "VAL9", "VAL10", "VAL11", "VAL12", "VAL13"):
+        assert v not in out
+    assert out.count("***") == 13
+
+
+def test_scrub_false_positive_protection():
+    """A value is only redacted when it follows a sensitive key."""
+    assert wrapper._scrub_command(["403"]) == "403"
+    assert wrapper._scrub_command(["\\u5403"]) == "\\u5403"
+    assert wrapper._scrub_command(["search", "python", "403", "\\u5403"]) \
+        == "search python 403 \\u5403"
+    assert "***" not in wrapper._scrub_command(["--limit", "10", "--json"])
+
+
+def test_scrub_long_benign_list_unaffected():
+    args = ["search", "python", "--limit", "10", "--json", "--sort", "top",
+            "keyword", "page", "2"]
+    assert wrapper._scrub_command(args) == " ".join(args)
+
+
+def test_stderr_dispatch_line_scrubbed(fake_bin, capsys):
+    fake_bin("gh", exit_code=0, stdout="ok")
+    cfg = load_config()
+    wrapper.run(cfg, "gh", ["api", "--token", "TOPSCRET"], quiet=False)
+    err = capsys.readouterr().err
+    assert "TOPSCRET" not in err
+    assert "***" in err
+
+
+def test_ledger_command_scrubbed(fake_bin):
+    fake_bin("gh", exit_code=0, stdout="ok")
+    cfg = load_config()
+    wrapper.run(cfg, "gh", ["api", "--token", "LEDGERSECRET"])
+    for r in state.read_records():
+        assert "LEDGERSECRET" not in json.dumps(r)
+    assert any("***" in r.get("command", "") for r in state.read_records())
+
+
+def test_ledger_never_contains_raw_configure_creds(fake_bin):
+    fake_bin("agent-reach", exit_code=0, stdout="")
+    cfg = load_config()
+    wrapper.run(cfg, "agent-reach",
+                ["configure", "--xhs-cookies", "RAWCOOKIE123"])
+    for r in state.read_records():
+        assert "RAWCOOKIE123" not in json.dumps(r)
+
+
+def test_scrub_403_value_after_key(fake_bin, capsys):
+    fake_bin("gh", exit_code=0, stdout="ok")
+    cfg = load_config()
+    wrapper.run(cfg, "gh", ["api", "--token", "403"], quiet=False)
+    err = capsys.readouterr().err
+    assert "403" not in err  # redacted because it followed a sensitive key

@@ -100,3 +100,33 @@ def install_shims(dry_run: bool = False, verbose: bool = True) -> None:
 def resolve_after_install(bin_name: str) -> str:
     """Resolution sanity used by doctor."""
     return find_real_binary(bin_name) or "<missing>"
+
+
+def uninstall_shims(dry_run: bool = False, verbose: bool = True) -> None:
+    """Remove reach-guard shims and restore originals.
+
+    For each wrapped binary: if the shim exists AND is ours, restore
+    <bin>.real -> <bin> when a .real exists (the original is preserved);
+    otherwise (curl-style: system binary was never moved) only our shim is
+    removed. Non-guard shims and absent shims are left untouched. Idempotent.
+    """
+    for b in WRAPPED_BINARIES:
+        shim = os.path.join(SHIM_DIR, b)
+        real = os.path.join(SHIM_DIR, b + ".real")
+        if not os.path.exists(shim) or not _is_guard_shim(shim):
+            continue
+        if os.path.exists(real):
+            if dry_run:
+                print(f"  {b}: would restore {real} -> {shim}")
+            else:
+                os.remove(shim)
+                os.rename(real, shim)
+                if verbose:
+                    print(f"  {b}: restored original -> {shim}")
+        else:
+            if dry_run:
+                print(f"  {b}: would remove shim {shim}")
+            else:
+                os.remove(shim)
+                if verbose:
+                    print(f"  {b}: removed shim (no .real to restore)")

@@ -94,6 +94,90 @@ def test_shims_install_idempotent():
     shims.install_shims()  # idempotent: no error
 
 
+# ---------------------------------------------------------------------------
+# P0-3: shims uninstall (restore .real -> bin; never touch system binaries)
+# ---------------------------------------------------------------------------
+
+def _write_file(path, content, mode=0o755):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.chmod(path, mode)
+
+
+def test_shims_uninstall_restores_real():
+    from reach_guard import shims
+    shim_dir = os.environ["REACH_GUARD_SHIM_DIR"]
+    real = os.path.join(shim_dir, "bili.real")
+    _write_file(real, "#!/bin/sh\necho original\n")
+    shims.install_shims()
+    assert shims.shim_status()["bili"] == "shim"
+    assert os.path.exists(real)
+    shims.uninstall_shims()
+    assert not os.path.exists(real)
+    with open(os.path.join(shim_dir, "bili"), encoding="utf-8") as f:
+        content = f.read()
+    assert "original" in content          # original preserved
+    assert "reach-guard" not in content   # our shim gone
+
+
+def test_shims_uninstall_curl_style_no_real():
+    """curl-style: no .real ever existed (system binary untouched); removing
+    our shim must not create or modify anything else."""
+    from reach_guard import shims
+    shim_dir = os.environ["REACH_GUARD_SHIM_DIR"]
+    shims.install_shims()
+    assert os.path.exists(os.path.join(shim_dir, "curl"))
+    assert not os.path.exists(os.path.join(shim_dir, "curl.real"))
+    shims.uninstall_shims()
+    assert not os.path.exists(os.path.join(shim_dir, "curl"))
+    assert not os.path.exists(os.path.join(shim_dir, "curl.real"))
+
+
+def test_shims_uninstall_foreign_shim_untouched():
+    from reach_guard import shims
+    shim_dir = os.environ["REACH_GUARD_SHIM_DIR"]
+    path = os.path.join(shim_dir, "twitter")
+    _write_file(path, "#!/bin/sh\necho foreign-kept\n")
+    shims.uninstall_shims()
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == "#!/bin/sh\necho foreign-kept\n"
+
+
+def test_shims_uninstall_absent_is_noop():
+    from reach_guard import shims
+    shim_dir = os.environ["REACH_GUARD_SHIM_DIR"]
+    shims.uninstall_shims()          # nothing installed
+    assert not os.path.exists(os.path.join(shim_dir, "gh"))
+    assert not os.path.exists(os.path.join(shim_dir, "gh.real"))
+
+
+def test_shims_uninstall_idempotent():
+    from reach_guard import shims
+    shims.install_shims()
+    shims.uninstall_shims()
+    status = shims.shim_status()
+    shims.uninstall_shims()  # second run: no-op, same final state
+    assert shims.shim_status() == status
+
+
+def test_shims_uninstall_dry_run_no_changes():
+    from reach_guard import shims
+    shim_dir = os.environ["REACH_GUARD_SHIM_DIR"]
+    real = os.path.join(shim_dir, "bili.real")
+    _write_file(real, "#!/bin/sh\necho original\n")
+    shims.install_shims()
+    shims.uninstall_shims(dry_run=True)
+    assert os.path.exists(real)
+    with open(os.path.join(shim_dir, "bili"), encoding="utf-8") as f:
+        assert "reach-guard" in f.read()  # still our shim
+
+
+def test_cli_shims_uninstall_exit0():
+    assert _main("shims", "uninstall") == 0
+    assert _main("shims", "uninstall", "--dry-run") == 0
+
+
 def test_cli_exit_code_contract(fake_bin):
     # contract table: 2/3/4/5/6/7/8 all reachable
     assert _main("run", "unknownbin") == 8

@@ -12,6 +12,7 @@ pre-flights the whole chain without executing the upstream.
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -36,6 +37,28 @@ def _install_hint(bin_name: str) -> str:
                 "https://github.com/Panniantong/agent-reach/archive/main.zip "
                 "(see docs/install.md), then re-run `reach-guard shims install`.")
     return f"{bin_name} binary not found; install it or check PATH."
+
+
+# Keys whose argv VALUES are redacted before any stderr print or ledger write.
+_SENSITIVE_KEYS = (
+    "twitter-cookies", "xhs-cookies", "youtube-cookies", "github-token",
+    "groq-key", "openai-key", "proxy", "auth_token", "ct0", "password",
+    "token", "cookie", "cookies",
+)
+
+
+def _scrub_command(args: list) -> str:
+    """Join args for display/ledger, redacting sensitive-key VALUES only.
+
+    Redacts both `key value` (positional) and `key=value` forms, case-
+    insensitive; the key itself is never redacted, and a value is only ever
+    redacted when it follows a sensitive key (no content sniffing).
+    """
+    s = " ".join(args)
+    keys = "|".join(re.escape(k) for k in _SENSITIVE_KEYS)
+    s = re.sub(rf"(?i)(\b(?:{keys})\s*=\s*)[^\s]+", r"\1***", s)
+    s = re.sub(rf"(?i)(\b(?:{keys})\b)(\s+)[^\s]+", r"\1\2***", s)
+    return s
 
 
 def find_real_binary(bin_name: str) -> Optional[str]:
@@ -80,7 +103,7 @@ def run(cfg: Config, bin_name: str, args: list, *,
 
     if not quiet:
         print(f"[reach-guard] guarded dispatch bin={bin_name} "
-              f"args={' '.join(args)}", file=sys.stderr)
+              f"args={_scrub_command(args)}", file=sys.stderr)
 
     # ---- resolve platform (fail-closed on unknown) -----------------------
     try:
@@ -121,11 +144,11 @@ def _run_exempt(cfg: Config, bin_name: str, args: list, run_id: str,
         print(f"[reach-guard] {_install_hint(bin_name)}", file=sys.stderr)
         return RunResult(EXIT_UPSTREAM)
     meta = {"run_id": run_id, "platform": "github", "account_hash": "anonymous",
-            "bin": bin_name, "command": " ".join(args), "exempt": True,
+            "bin": bin_name, "command": _scrub_command(args), "exempt": True,
             "dry_run": dry_run}
     state.append_record(dict(meta, ts=time.time(), interrupted=False, exit=None))
     if dry_run:
-        print("[reach-guard dry-run] would run:", real, " ".join(args))
+        print("[reach-guard dry-run] would run:", real, _scrub_command(args))
         return RunResult(EXIT_OK)
     rc = _exec_passthrough(real, args, run_id, meta, cfg)
     return RunResult(EXIT_OK if rc == 0 else EXIT_UPSTREAM, upstream_exit=rc)
@@ -140,11 +163,11 @@ def _run_meta(cfg: Config, bin_name: str, args: list, run_id: str,
         print(f"[reach-guard] {_install_hint(bin_name)}", file=sys.stderr)
         return RunResult(EXIT_UPSTREAM)
     meta = {"run_id": run_id, "platform": "meta", "account_hash": "anonymous",
-            "bin": bin_name, "command": " ".join(args), "meta": True,
+            "bin": bin_name, "command": _scrub_command(args), "meta": True,
             "dry_run": dry_run}
     state.append_record(dict(meta, ts=time.time(), interrupted=False, exit=None))
     if dry_run:
-        print("[reach-guard dry-run] would run:", real, " ".join(args))
+        print("[reach-guard dry-run] would run:", real, _scrub_command(args))
         return RunResult(EXIT_OK)
     rc = _exec_passthrough(real, args, run_id, meta, cfg)
     return RunResult(EXIT_OK if rc == 0 else EXIT_UPSTREAM, upstream_exit=rc)
@@ -224,7 +247,7 @@ def _run_guarded(cfg, bin_name, platform, args, run_id, dry_run,
     meta = {"run_id": run_id, "platform": platform,
             "account_hash": account_hash, "account": account_label,
             "proxy_ip": proxy_url or "", "bin": bin_name,
-            "command": " ".join(args), "allow_write": allow_write}
+            "command": _scrub_command(args), "allow_write": allow_write}
 
     if dry_run:
         print(f"[reach-guard dry-run] ALL GATES PASSED: platform={platform} "

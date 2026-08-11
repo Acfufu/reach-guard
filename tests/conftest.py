@@ -28,6 +28,20 @@ def _clean():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_time_window(monkeypatch):
+    # Tests must not depend on the wall clock: the deny window is real
+    # (23:00-09:00 + 19:00-22:00 Asia/Shanghai) and would flake the suite at
+    # night. Pin the clock to midday so in_deny_window() is False by default;
+    # tests targeting the window pass an explicit datetime or monkeypatch
+    # in_deny_window themselves (later monkeypatch.setattr wins).
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from reach_guard import pacing
+    fixed = datetime(2026, 8, 11, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    monkeypatch.setattr(pacing, "_now_tz", lambda: fixed)
+
+
 @pytest.fixture
 def write_config():
     def _write(text: str):

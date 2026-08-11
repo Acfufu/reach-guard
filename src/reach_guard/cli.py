@@ -29,6 +29,7 @@ from . import session as session_mod
 from . import pacing, quota as quota_mod
 from .proxy_layer import pick_proxy, verify_binding, generate_profile
 from . import detect as detect_mod
+from . import report
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -50,8 +51,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("args", nargs=argparse.REMAINDER,
                        help="<bin> <upstream args...> (or -- <args> in shim mode)")
 
-    sub.add_parser("doctor", help="health check of guard + upstream")
-    sub.add_parser("status", help="strict-mode status, quotas, breakers, ledger")
+    doc = sub.add_parser("doctor", help="health check of guard + upstream")
+    doc.add_argument("--json", action="store_true",
+                     help="emit machine-readable JSON (pinned whitelist schema)")
+    status_p = sub.add_parser("status", help="strict-mode status, quotas, breakers, ledger")
+    status_p.add_argument("--json", action="store_true",
+                          help="emit machine-readable JSON (pinned whitelist schema)")
     dr = sub.add_parser("dry-run", help="alias for `run --dry-run`")
     dr.add_argument("--as-bin", dest="as_bin")
     dr.add_argument("--allow-write", action="store_true")
@@ -82,6 +87,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sh_sub = sh.add_subparsers(dest="shim_cmd", required=True)
     inst = sh_sub.add_parser("install", help="install/refresh PATH shims")
     inst.add_argument("--dry-run", action="store_true")
+    uninst = sh_sub.add_parser("uninstall",
+                               help="remove reach-guard shims, restore .real "
+                                    "originals (never touches system binaries)")
+    uninst.add_argument("--dry-run", action="store_true")
     sh_sub.add_parser("status", help="shim status per binary")
 
     sub.add_parser("detect", help="scan for direct (unguarded) upstream calls")
@@ -111,7 +120,18 @@ def _run_args(args: list, as_bin: Optional[str], dry_run: bool,
     return res.exit_code
 
 
-def _cmd_doctor() -> int:
+def _cmd_doctor(args) -> int:
+    if getattr(args, "json", False):
+        try:
+            cfg = load_config()
+        except ConfigError as e:
+            print(f"config error: {e}", file=sys.stderr)
+            return EXIT_CONFIG
+        except UnregisteredPlatformError as e:
+            print(f"config error: {e}", file=sys.stderr)
+            return EXIT_SESSION
+        print(json.dumps(report.status_json(cfg), indent=2))
+        return EXIT_OK
     print("== reach-guard doctor ==")
     # config
     try:
@@ -187,12 +207,15 @@ def _cmd_doctor() -> int:
     return EXIT_OK
 
 
-def _cmd_status() -> int:
+def _cmd_status(args) -> int:
     try:
         cfg = load_config()
     except ConfigError as e:
         print(f"config error: {e}", file=sys.stderr)
         return EXIT_CONFIG
+    if getattr(args, "json", False):
+        print(json.dumps(report.status_json(cfg), indent=2))
+        return EXIT_OK
     now = time.time()
     print("== reach-guard status (STRICT mode — default & only) ==")
     print(f"strict table   : {len(cfg.platforms)} platforms, all active")
@@ -465,6 +488,9 @@ def _cmd_shims(args) -> int:
         for b, s in shims_mod.shim_status().items():
             print(f"  {b:12s}: {s}")
         return EXIT_OK
+    if args.shim_cmd == "uninstall":
+        shims_mod.uninstall_shims(dry_run=args.dry_run)
+        return EXIT_OK
     shims_mod.install_shims(dry_run=args.dry_run)
     return EXIT_OK
 
@@ -479,9 +505,9 @@ def main(argv: Optional[list] = None) -> int:
         if args.cmd == "dry-run":
             return _run_args(args.args, args.as_bin, True, args.allow_write)
         if args.cmd == "doctor":
-            return _cmd_doctor()
+            return _cmd_doctor(args)
         if args.cmd == "status":
-            return _cmd_status()
+            return _cmd_status(args)
         if args.cmd == "profile":
             return _cmd_profile(args)
         if args.cmd == "account":
